@@ -396,14 +396,17 @@ def write_katatsumuri_midi(path: str, group: str = "f_low", program: int = 0) ->
 # =====================================================================
 # 5. 保存
 # =====================================================================
-def peak_normalize(x: np.ndarray) -> np.ndarray:
-    # TODO(修正候補④): 元ノートと同じピーク正規化。レベル比較をするならRMS正規化の方が適切。
-    return x / (np.max(np.abs(x)) + 1e-10)
 
 
 def save_wavs(outdir: str, x_in: np.ndarray, out: dict, sr: int) -> None:
     """入力と各条件の音声を outdir に保存（聴き比べ用）"""
+    x_in = rms_normalize(x_in)
+    sigs  = {k: rms_normalize(out[k]) for k in AUDIO_KEYS}
+    max_peak = max(np.max(np.abs(s)) for s in [x_in] + list(sigs.values()))
+    s = 1.0
+    if max_peak > 1.0:
+        s = 0.99 / max_peak
     os.makedirs(outdir, exist_ok=True)
-    sf.write(os.path.join(outdir, "00_input.wav"), peak_normalize(x_in), sr)
+    sf.write(os.path.join(outdir, "00_input.wav"), x_in * s, sr)
     for i, k in enumerate(AUDIO_KEYS, start=1):
-        sf.write(os.path.join(outdir, f"{i:02d}_{k}.wav"), peak_normalize(out[k]), sr)
+        sf.write(os.path.join(outdir, f"{i:02d}_{k}.wav"), sigs[k] * s, sr)
