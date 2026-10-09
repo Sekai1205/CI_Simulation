@@ -3,7 +3,6 @@ cisim.py — CIシミュレーション(ノイズバンドボコーダ + 電流�
 
 CISim.ipynb のセクション3・5・7の処理を関数としてまとめたもの。
 信号処理の中身は「元ノートブックと同じ挙動」のままにしてあり、
-改善候補の箇所には  # TODO(修正候補○)  のコメントを付けている（後で解説しながら直す前提）。
 
 構成:
     1. CIConfig        … パラメータを1か所にまとめる
@@ -36,6 +35,7 @@ class CIConfig:
     env_order: int = 2           # 包絡線LPFの次数
     spacing: float = 0.75        # 電極間隔 [mm]
     seed: int = 0                # キャリア乱数のシード（固定すると再現可能）
+    causal: bool = False         #True=因果的(sosfilt)、False=ゼロ位相(sosfiltfilt)
 
     @property
     def boundaries(self) -> np.ndarray:
@@ -60,9 +60,14 @@ def _band_coeffs(lo_hz, hi_hz, sr, order):
     high = np.clip(hi_hz / (sr / 2), 0.001, 0.999)
     if low >= high:
         return None
-    # TODO(修正候補⑤): ba形式は低い正規化周波数で数値的に不安定になりやすい
-    #                  （セクション6でNaNが出た原因候補）。sos形式 + sosfilt を検討。
-    return signal.butter(order, [low, high], btype="band")
+    return signal.butter(order, [low, high], btype="band", output="sos")
+
+
+def _apply_filter(sos, x, cfg):
+    if cfg.causal:
+        return signal.sosfilt(sos,x)
+    else:
+        return signal.sosfiltfilt(sos,x)
 
 
 def split_bands(x: np.ndarray, cfg: CIConfig) -> np.ndarray:
@@ -70,19 +75,17 @@ def split_bands(x: np.ndarray, cfg: CIConfig) -> np.ndarray:
     b_edges = cfg.boundaries
     out = np.zeros((cfg.n_ch, len(x)))
     for i in range(cfg.n_ch):
-        ba = _band_coeffs(b_edges[i], b_edges[i + 1], cfg.sr, cfg.bp_order)
-        if ba is None:
+        sos = _band_coeffs(b_edges[i], b_edges[i + 1], cfg.sr, cfg.bp_order)
+        if sos is None:
             continue
-        # TODO(修正候補⑤): lfilter(因果的) と filtfilt(ゼロ位相) が元ノートでは混在。どちらかに統一。
-        out[i] = signal.lfilter(*ba, x)
+        out[i] = _apply_filter(sos, x, cfg)
     return out
-
 
 def extract_envelope(sig: np.ndarray, cfg: CIConfig) -> np.ndarray:
     """ヒルベルト変換の絶対値 → LPF で平滑化"""
     env = np.abs(signal.hilbert(sig))
-    b, a = signal.butter(cfg.env_order, cfg.env_cut / (cfg.sr / 2), btype="low")
-    return signal.lfilter(b, a, env)
+    sos = signal.butter(cfg.env_order, cfg.env_cut / (cfg.sr / 2), btype="low", output="sos")
+    return _apply_filter(sos, env, cfg)
 
 
 def extract_envelopes(x: np.ndarray, cfg: CIConfig) -> np.ndarray:
@@ -127,10 +130,10 @@ def make_carriers(cfg: CIConfig, n_samples: int, mode: str = "noise",
     car = np.zeros((cfg.n_ch, n_samples))
     for i in range(cfg.n_ch):
         if mode == "noise":
-            ba = _band_coeffs(b_edges[i], b_edges[i + 1], cfg.sr, cfg.bp_order)
-            if ba is None:
+            sos = _band_coeffs(b_edges[i], b_edges[i + 1], cfg.sr, cfg.bp_order)
+            if sos is None:
                 continue
-            car[i] = signal.lfilter(*ba, rng.standard_normal(n_samples))
+            car[i] = _apply_filter(sos, rng.standard_normal(n_samples), cfg)
         elif mode == "tone":
             fc = np.sqrt(b_edges[i] * b_edges[i + 1])
             car[i] = np.sin(2 * np.pi * fc * t)
@@ -282,6 +285,112 @@ def mix_at_snr(target: np.ndarray, masker: np.ndarray, snr_db: float) -> np.ndar
     pt, pm = np.mean(t ** 2), np.mean(m ** 2)
     m = m * np.sqrt(pt / (pm * 10 ** (snr_db / 10)))
     return rms_normalize(t + m)
+
+
+# =====================================================================
+# 4b. 「かたつむり」の楽器音（JVS-MuSiC modified_grouped と同じ旋律・タイミング）
+# =====================================================================
+# 旋律は楽譜のドレミ表記と、JVS-MuSiC 7名分の歌声のピッチ・オンセット実測を照合して決定。
+# 1フレーズ = 12拍、四分音符 = 0.4 s（150 BPM）、歌い出し 2.41 s、3フレーズ × 2番。
+# 音高は「ド」からの半音数（ド=0, レ=2, ミ=4, ファ=5, ソ=7, ラ=9, 高いド=12）。
+# 各要素: (拍位置, 長さ[拍], 音高)
+_KATATSUMURI_PHRASES = [
+    # でんでんむしむし かたつむり（ソ ソソ ミ ド ドド レ ミ ミレ ド レ）
+    [(0, 1, 7), (1, .5, 7), (1.5, .5, 7), (2, 1, 4), (3, 1, 0), (4, .5, 0), (4.5, .5, 0),
+     (5, 1, 2), (6, 1, 4), (7, .5, 4), (7.5, .5, 2), (8, 1, 0), (9, 3, 2)],
+    # おまえのあたまは どこにある（ミ ファソ ラ ソ ソソ ミ レ レド レ ミ）
+    [(0, 1, 4), (1, .5, 5), (1.5, .5, 7), (2, 1, 9), (3, 1, 7), (4, .5, 7), (4.5, .5, 7),
+     (5, 1, 4), (6, 1, 2), (7, .5, 2), (7.5, .5, 0), (8, 1, 2), (9, 3, 4)],
+    # つのだせ やりだせ あたまだせ（付点8分の連続：ソ ド' ド' ソ ミ ソ ソ ミ ド ミ ミ レ ド）
+    [(i * .75, .75, p) for i, p in enumerate([7, 12, 12, 7, 4, 7, 7, 4, 0, 4, 4, 2])] + [(9, 3, 0)],
+]
+
+# 各グループの「ド」の MIDI ノート番号（modified_grouped の実測から）
+KATATSUMURI_DO = {"m_low": 46, "m_mid": 49, "m_high": 51,
+                  "f_low": 57, "f_mid": 58, "f_high": 61}
+
+KATATSUMURI_START = 2.41   # 歌い出し [s]
+KATATSUMURI_QUARTER = 0.4  # 四分音符の長さ [s]（150 BPM）
+
+
+def katatsumuri_notes(group: str = "f_low", start: float = KATATSUMURI_START,
+                      quarter: float = KATATSUMURI_QUARTER, verses: int = 2):
+    """[(開始 s, 長さ s, MIDIノート番号), ...] を返す"""
+    do = KATATSUMURI_DO[group]
+    notes, beat0 = [], 0.0
+    for _ in range(verses):
+        for ph in _KATATSUMURI_PHRASES:
+            for b, d, p in ph:
+                notes.append((start + (beat0 + b) * quarter, d * quarter, do + p))
+            beat0 += 12
+    return notes
+
+
+def _instrument_tone(f0, dur, sr, timbre):
+    """1音ぶんの合成音（加算合成）"""
+    t = np.arange(int(dur * sr)) / sr
+    if timbre == "piano":      # 倍音多め・鋭い立ち上がり・指数減衰
+        amps = [1 / k for k in range(1, 16)]
+        env = np.exp(-t * 3.0) * np.minimum(1, t / 0.005)
+    elif timbre == "flute":    # 基音中心・やわらかい立ち上がり・持続
+        amps = [1.0, 0.35, 0.12, 0.05]
+        env = np.minimum(1, t / 0.06)
+    elif timbre == "sine":     # 純音（倍音なし）
+        amps = [1.0]
+        env = np.minimum(1, t / 0.01)
+    else:
+        raise ValueError(f"unknown timbre: {timbre}")
+    x = sum(a * np.sin(2 * np.pi * f0 * k * t) for k, a in enumerate(amps, start=1) if f0 * k < sr / 2)
+    rel = min(int(0.02 * sr), len(t) // 2)          # 音の終わりのクリック防止
+    if rel > 0:
+        env = env.copy()
+        env[-rel:] *= np.linspace(1, 0, rel)
+    return x * env
+
+
+def gen_katatsumuri(sr: int, group: str = "f_low", timbre: str = "piano",
+                    total_sec: float = 31.2) -> np.ndarray:
+    """歌声(modified_grouped)と同じ旋律・タイミング・調の楽器音を合成"""
+    y = np.zeros(int(total_sec * sr))
+    for st, d, m in katatsumuri_notes(group):
+        f0 = 440.0 * 2 ** ((m - 69) / 12)
+        tone = _instrument_tone(f0, d * 0.95, sr, timbre)   # 音符間にわずかな隙間
+        i = int(st * sr)
+        y[i:i + len(tone)] += tone[: len(y) - i]
+    return rms_normalize(y)
+
+
+def write_katatsumuri_midi(path: str, group: str = "f_low", program: int = 0) -> None:
+    """GarageBand などに読み込める MIDI ファイル（1トラック, 150 BPM）を書き出す"""
+    import struct
+    tpq = 480
+    bpm = 60 / KATATSUMURI_QUARTER
+    ev = []  # (tick, データ)
+    for st, d, m in katatsumuri_notes(group):
+        on = int(round(st / KATATSUMURI_QUARTER * tpq))
+        off = int(round((st + d * 0.95) / KATATSUMURI_QUARTER * tpq))
+        ev += [(on, bytes([0x90, m, 90])), (off, bytes([0x80, m, 0]))]
+    ev.sort(key=lambda e: (e[0], e[1][0] == 0x90))
+
+    def vlq(n):
+        out = [n & 0x7F]
+        while n > 0x7F:
+            n >>= 7
+            out.insert(0, (n & 0x7F) | 0x80)
+        return bytes(out)
+
+    usec = int(60_000_000 / bpm)
+    trk = vlq(0) + b"\xff\x51\x03" + usec.to_bytes(3, "big")      # テンポ
+    trk += vlq(0) + b"\xff\x58\x04\x04\x02\x18\x08"                # 4/4拍子
+    trk += vlq(0) + bytes([0xC0, program])                        # 音色
+    last = 0
+    for tick, data in ev:
+        trk += vlq(tick - last) + data
+        last = tick
+    trk += vlq(0) + b"\xff\x2f\x00"
+    with open(path, "wb") as f:
+        f.write(b"MThd" + struct.pack(">IHHH", 6, 0, 1, tpq))
+        f.write(b"MTrk" + struct.pack(">I", len(trk)) + trk)
 
 
 # =====================================================================
