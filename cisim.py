@@ -105,16 +105,10 @@ def normalize_rows(M: np.ndarray) -> np.ndarray:
     return M / np.sum(M, axis=1, keepdims=True)
 
 
-def make_G_inv(G: np.ndarray, eps: float = 0.0, rownorm: bool = False) -> np.ndarray:
-    """
-    (G + εI)^{-1}
-    eps=0      : 元ノート セクション5-2 と同じ（正規化済みGの素の逆行列）
-    eps>0      : セクション5-3 と同じ正則化
-    rownorm=True: セクション5-3・6 と同じく、逆行列をさらに行和で正規化
-    """
-    # TODO(修正候補①): rownorm=True だと G @ G_inv が単位行列にならず、それ自体が残差を生む。
+def make_G_inv(G: np.ndarray, eps: float = 0.0) -> np.ndarray:
+    """正規化済みの G に対する (G + εI)^{-1}。ε>0 で正則化（補償は甘くなるが刺激が穏やかになる）"""
     Gi = np.linalg.inv(G + eps * np.eye(G.shape[0]))
-    return normalize_rows(Gi) if rownorm else Gi
+    return Gi
 
 
 def make_carriers(cfg: CIConfig, n_samples: int, mode: str = "noise",
@@ -150,8 +144,7 @@ def synthesize(env: np.ndarray, carriers: np.ndarray) -> np.ndarray:
 # =====================================================================
 # 3. 全条件をまとめて実行
 # =====================================================================
-def run_conditions(x: np.ndarray, cfg: CIConfig, lam: float, eps: float = 0.0,
-                   rownorm: bool = False, mode: str = "noise") -> dict:
+def run_conditions(x: np.ndarray, cfg: CIConfig, lam: float, eps: float = 0.0, mode: str = "noise") -> dict:
     """
     1つの入力 x から比較用の全条件を作る。キャリアは全条件で共通（差が処理だけによるものになる）。
 
@@ -168,7 +161,7 @@ def run_conditions(x: np.ndarray, cfg: CIConfig, lam: float, eps: float = 0.0,
     car = make_carriers(cfg, len(x), mode, np.random.default_rng(cfg.seed))
 
     G = normalize_rows(make_G(cfg, lam))
-    Gi = make_G_inv(G, eps=eps, rownorm=rownorm)
+    Gi = make_G_inv(G, eps=eps)
 
     pre = Gi @ env
     env_spread = G @ env
