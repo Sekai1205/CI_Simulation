@@ -146,6 +146,26 @@ def env_error(env_ref: np.ndarray, env_test: np.ndarray) -> dict:
             "env_rel_err_db": float(10 * np.log10(np.sum(num) / np.sum(den) + 1e-12))}
 
 
+def env_contrast(env_ref, env_test, decim=8):
+    ref = env_ref[:, ::decim]
+    test = env_test[:, ::decim]
+    sum_ref = ref.sum(axis=0)
+    valid = sum_ref >= (max(sum_ref) * 0.01)
+    ref = ref[:, valid]
+    test = test[:,valid]
+    a = ref - ref.mean(axis=0)
+    b = test - test.mean(axis=0)
+    num = (a * b).sum(axis=0)
+    den = np.sqrt((a ** 2).sum(axis=0) * (b ** 2).sum(axis=0))
+    profile_corr = np.mean(num /den)
+    cv_ref = ref.std(axis=0) / ref.mean(axis=0)
+    cv_test = test.std(axis=0) / test.mean(axis=0)
+    contrast_ratio = np.median(cv_test / cv_ref)
+    return {
+        "profile_corr": profile_corr,
+        "contrast_ratio": contrast_ratio
+    }
+
 # =====================================================================
 # 図
 # =====================================================================
