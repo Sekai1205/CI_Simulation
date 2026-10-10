@@ -19,6 +19,7 @@ from dataclasses import dataclass, asdict
 import numpy as np
 import scipy.signal as signal
 import soundfile as sf
+from scipy.optimize import nnls
 
 
 # =====================================================================
@@ -111,6 +112,19 @@ def make_G_inv(G: np.ndarray, eps: float = 0.0) -> np.ndarray:
     return Gi
 
 
+def nnls_compensate(env, G, decim=8):
+    """非負最小二乗法で逆補償（G @ env_comp ≈ env）""" 
+    N = env.shape[1]
+    idx = np.arange(0, N, decim)
+    p_ds = np.zeros((env.shape[0], len(idx)))
+    for i in range(len(idx)):
+        p_ds[:,i] = nnls(G, env[:, idx[i]])[0]
+    env_comp = np.zeros_like(env)
+    for ch in range(env.shape[0]):
+        env_comp[ch] = np.interp (np.arange(N), idx, p_ds[ch])
+    return env_comp
+
+
 def make_carriers(cfg: CIConfig, n_samples: int, mode: str = "noise",
                   rng: np.random.Generator | None = None) -> np.ndarray:
     """
@@ -168,6 +182,9 @@ def run_conditions(x: np.ndarray, cfg: CIConfig, lam: float, eps: float = 0.0, m
     env_comp_ideal = G @ pre
     env_comp_clip = G @ np.clip(pre, 0, None)
 
+    pre_nnls = nnls_compensate(env, G)
+    env_comp_nnls = G @ pre_nnls
+
     return {
         # 音声
         "vocoder": synthesize(env, car),
@@ -175,20 +192,23 @@ def run_conditions(x: np.ndarray, cfg: CIConfig, lam: float, eps: float = 0.0, m
         "comp_ideal": synthesize(env_comp_ideal, car),
         "comp_clip": synthesize(env_comp_clip, car),
         "precomp": synthesize(pre, car),
+        "comp_nnls": synthesize(env_comp_nnls, car),
         # 包絡
         "env": env,
         "env_spread": env_spread,
         "env_comp_ideal": env_comp_ideal,
         "env_comp_clip": env_comp_clip,
         "env_precomp": pre,
+        "env_comp_nnls": env_comp_nnls,
+        "env_pre_nnls": pre_nnls,
         # その他
         "G": G,
         "G_inv": Gi,
-        "neg_ratio": float(np.mean(pre < 0)),
+        "neg_ratio": float(np.mean(pre < 0))
     }
 
 
-AUDIO_KEYS = ["vocoder", "spread", "comp_ideal", "comp_clip", "precomp"]
+AUDIO_KEYS = ["vocoder", "spread", "comp_ideal", "comp_clip", "precomp", "comp_nnls"]
 
 
 # =====================================================================
@@ -278,6 +298,7 @@ def mix_at_snr(target: np.ndarray, masker: np.ndarray, snr_db: float) -> np.ndar
     pt, pm = np.mean(t ** 2), np.mean(m ** 2)
     m = m * np.sqrt(pt / (pm * 10 ** (snr_db / 10)))
     return rms_normalize(t + m)
+
 
 
 # =====================================================================
