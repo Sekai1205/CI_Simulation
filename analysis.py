@@ -275,23 +275,30 @@ def plot_waveforms(signals: dict, sr: int, tlim: tuple | None = None, title: str
 
 
 COND_STYLE = {"spread": ("補償なし", "gray"), "comp_clip": ("クリップ", "tab:red"), "comp_nnls": ("NNLS", "tab:blue")}
+STIM_LABEL = {"sweep": "スイープ", "sam_fm16": "SAM音 (16 Hz)", "en_m01": "英語音声 (男性)", "en_f01": "英語音声 (女性)", "song_m_low": "歌声 (男性・低)", "song_f_high": "歌声 (女性・高)", "piano_f_high": "ピアノ (女性・高と同旋律)"}
 
 
-def plot_metric_vs_lambda(df, metric, stims, tests=("spread", "comp_clip", "comp_nnls"), ylabel=None):
-    fig, axes = plt.subplots(1, len(stims), figsize=(3 * len(stims), 3), sharey=True)
-    axes = np.atleast_1d(axes)
-    for ax, stim in zip(axes, stims):
-        for test in tests:
-            sub_df = df[(df["ref"] == "vocoder") & (df["stim"] == stim) & (df["test"] == test)]
-            sub_df = sub_df.sort_values("lam")
-            label, color = COND_STYLE[test]
-            ax.plot(sub_df["lam"], sub_df[metric], marker="o", color=color, label=label)
-        ax.set_title(stim)
-        ax.set_xlabel("λ[mm]")
+def plot_metric_vs_lambda(df, metric, stims, tests=("spread", "comp_clip", "comp_nnls"), ylabel=None, ncols=4):
+    nrows = int(np.ceil(len(stims) / ncols))
+    if len(stims) < ncols:
+        ncols = len(stims)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3 * ncols, 3 * nrows), sharey=True, squeeze=False)
+    for i, ax in enumerate(axes.flat):
+        if i < len(stims):
+            stim = stims[i]
+            ax.set_title(STIM_LABEL.get(stim, stim))
+            for test in tests:
+                sub_df = df[(df["ref"] == "vocoder") & (df["stim"] == stim) & (df["test"] == test)]
+                sub_df = sub_df.sort_values("lam")
+                label, color = COND_STYLE[test]
+                ax.plot(sub_df["lam"], sub_df[metric], marker="o", color=color, label=label)
+        else:
+            ax.set_visible(False)
+        ax.set_xlabel("λ [mm]")
         ax.set_xticks([2, 5, 9])
-        if ax is axes[0]:
+        if i == 0:
             ax.legend()
     if ylabel:
-        axes[0].set_ylabel(ylabel)
+        for r in range(nrows): axes[r, 0].set_ylabel(ylabel)
     fig.tight_layout()
     return fig
