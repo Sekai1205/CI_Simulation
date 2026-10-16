@@ -166,6 +166,24 @@ def env_contrast(env_ref, env_test, decim=8):
         "contrast_ratio": contrast_ratio
     }
 
+
+def env_flatness(env, decim=8, thr=0.01):
+    """
+    チャンネル方向のスペクトル平坦度（0〜1）。
+    各時刻で、22チャンネルの包絡の「幾何平均 ÷ 算術平均」を計算し、全時刻の中央値を返す。
+    1 に近いほど全チャンネルが同じ大きさ（平ら）。参考：ピンクノイズ 0.88、白色雑音 0.77（16 kHz・既定設定）。
+    0 に近いほど一部のチャンネルだけが強い（山と谷がはっきりしている）。
+    無音の時刻（全チャンネル合計が最大値の thr 倍未満）は除く。
+    """
+    e = np.clip(env[:, ::decim], 0, None)
+    total = e.sum(axis=0)
+    e = e[:, total >= total.max() * thr]
+    # 幾何平均は 0 に近いチャンネルに極端に敏感なので、各時刻の最大値の 1/1000（-60 dB）を下限にする
+    e = np.maximum(e, 1e-3 * e.max(axis=0, keepdims=True))
+    geo = np.exp(np.mean(np.log(e), axis=0))
+    arith = np.mean(e, axis=0)
+    return float(np.median(geo / arith))
+
 # =====================================================================
 # 図
 # =====================================================================
@@ -257,18 +275,37 @@ def plot_env_error(env_ref: np.ndarray, env_test: np.ndarray, cfg: CIConfig, tit
     return fig
 
 
-def plot_waveforms(signals: dict, sr: int, tlim: tuple | None = None, title: str = ""):
-    """波形を縦に並べる（短い信号・インパルス応答の確認用）"""
-    n = len(signals)
-    fig, axes = plt.subplots(n, 1, figsize=(10, 1.8 * n), sharex=True)
-    axes = np.atleast_1d(axes)
-    for ax, (k, x) in zip(axes, signals.items()):
-        ax.plot(np.arange(len(x)) / sr * 1000, x, lw=0.7)
-        ax.set_ylabel(k)
-        ax.grid(True, alpha=0.3)
+def plot_waveforms(signals: dict, sr: int, tlim: tuple | None = None, zoom: tuple | None = None,
+                   sharey: bool = False, title: str = ""):
+    """
+    波形を縦に並べる。
+      tlim   : 左列の表示範囲 (開始ms, 終了ms)。None なら全体
+      zoom   : (開始ms, 終了ms) を渡すと右列に拡大図を追加（左列にはその区間を色付きで表示）
+      sharey : True なら全段で縦軸をそろえる（大きさの比較用。信号は呼ぶ側でRMSをそろえておく）
+    """
+    keys = list(signals)
+    n, ncol = len(keys), (2 if zoom else 1)
+    fig, axes = plt.subplots(n, ncol, figsize=(13 if zoom else 10, 1.5 * n + 0.6),
+                             sharex="col", sharey=(True if sharey else "row"), squeeze=False,
+                             gridspec_kw={"width_ratios": [3, 1]} if zoom else None)
+    for i, k in enumerate(keys):
+        x = signals[k]
+        t = np.arange(len(x)) / sr * 1000
+        axes[i, 0].plot(t, x, lw=0.5)
+        axes[i, 0].set_ylabel(k, rotation=0, ha="right", va="center")
+        if zoom:
+            axes[i, 0].axvspan(*zoom, color="tab:orange", alpha=0.25)
+            sel = (t >= zoom[0]) & (t <= zoom[1])
+            axes[i, 1].plot(t[sel], x[sel], lw=0.8)
+        for ax in axes[i]:
+            ax.grid(True, alpha=0.3)
     if tlim:
-        axes[-1].set_xlim(*tlim)
-    axes[-1].set_xlabel("Time (ms)")
+        axes[-1, 0].set_xlim(*tlim)
+    if zoom:
+        axes[-1, 1].set_xlim(*zoom)
+        axes[0, 1].set_title("zoom", fontsize=10)
+        axes[-1, 1].set_xlabel("Time (ms)")
+    axes[-1, 0].set_xlabel("Time (ms)")
     fig.suptitle(title)
     fig.tight_layout()
     return fig

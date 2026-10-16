@@ -210,6 +210,23 @@ def run_conditions(x: np.ndarray, cfg: CIConfig, lam: float, eps: float = 0.0, m
 
 AUDIO_KEYS = ["vocoder", "spread", "comp_ideal", "comp_clip", "precomp", "comp_nnls"]
 
+# 音声の名前 → その音声を合成する包絡の名前（run_conditions の返り値のキー）
+AUDIO_FROM_ENV = {"vocoder": "env", "spread": "env_spread", "comp_ideal": "env_comp_ideal",
+                  "comp_clip": "env_comp_clip", "precomp": "env_precomp", "comp_nnls": "env_comp_nnls"}
+
+
+def resynthesize_with_carrier(out: dict, cfg: CIConfig, mode: str) -> dict:
+    """
+    run_conditions の結果（包絡）はそのままに、キャリアだけ mode に差し替えて音声を作り直す。
+    包絡・補償（NNLS を含む）の計算をやり直さないので速い。
+    包絡の指標（包絡誤差・コントラスト比など）はキャリアに依存しないので、変わるのは音声の指標だけ。
+    """
+    car = make_carriers(cfg, out["env"].shape[1], mode, np.random.default_rng(cfg.seed))
+    new = dict(out)
+    for audio_key, env_key in AUDIO_FROM_ENV.items():
+        new[audio_key] = synthesize(out[env_key], car)
+    return new
+
 
 # =====================================================================
 # 4. 刺激（入力音）
@@ -424,3 +441,27 @@ def save_wavs(outdir: str, x_in: np.ndarray, out: dict, sr: int) -> None:
     sf.write(os.path.join(outdir, "00_input.wav"), x_in * s, sr)
     for i, k in enumerate(AUDIO_KEYS, start=1):
         sf.write(os.path.join(outdir, f"{i:02d}_{k}.wav"), sigs[k] * s, sr)
+
+def save_residuals(outdir: str, out: dict, sr: int, ref: str = "vocoder",
+                   tests=("comp_ideal", "spread", "comp_clip", "comp_nnls")) -> dict:
+    """
+    「差の信号」（test − ref）を wav に保存し、差の大きさ [dB] を返す（「ザー」の正体探し用）。
+
+    - ref と test を同じ RMS にそろえてから引き算する（save_wavs と同じ基準）。
+      キャリアは全条件で共通なので、差に残るのは「処理の違い」による成分だけ。
+    - 差の信号は RMS をそろえない：差の大きさそのものが情報なので、
+      全ファイル共通の倍率（クリップ防止）だけを掛けて保存する。
+    - comp_ideal の差はほぼ無音になるはず（ならなければ数値計算の問題）。
+
+    返り値: {test名: 差の大きさ [dB]（ref の大きさに対する比。0 dB = ref と同じ大きさ）}
+    """
+    r = rms_normalize(out[ref])
+    res = {k: rms_normalize(out[k]) - r for k in tests}
+    peak = max(np.max(np.abs(v)) for v in res.values())
+    gain = 0.99 / peak if peak > 0.99 else 1.0
+    os.makedirs(outdir, exist_ok=True)
+    level_db = {}
+    for k, v in res.items():
+        sf.write(os.path.join(outdir, f"res_{k}_minus_{ref}.wav"), v * gain, sr)
+        level_db[k] = float(10 * np.log10(np.mean(v ** 2) / np.mean(r ** 2) + 1e-12))
+    return level_db
